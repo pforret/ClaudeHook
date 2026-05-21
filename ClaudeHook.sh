@@ -83,9 +83,10 @@ flag|h|help|show usage
 flag|Q|QUIET|no output
 flag|V|VERBOSE|also show debug messages
 flag|f|FORCE|do not ask for confirmation (always yes)
+flag|D|DRY_RUN|print message instead of speaking (for testing)
 option|L|LOG_DIR|folder for log files |$HOME/log/$script_prefix
 option|T|TMP_DIR|folder for temp files|/tmp/$script_prefix
-choice|1|action|action to perform|action1,action2,check,env,update
+choice|1|action|action to perform|say,install,check,env,update
 param|?|input|input file/text
 " -v -e '^#' -e '^\s*$'
 }
@@ -103,23 +104,18 @@ function Script:main() {
   Os:require "awk"
 
   case "${action,,}" in # ${action,,} = lowercase $action
-  action1)
-    #TIP: use «$script_prefix action1» to ...
-    #TIP:> $script_prefix action1
-    do_action1
+  say)
+    #TIP: use «$script_prefix say "<message>"» to speak "<app> <message>"
+    #TIP:> $script_prefix say "is done"
+    do_say
     ;;
 
-  action2)
-    #TIP: use «$script_prefix action2» to ...
-    #TIP:> $script_prefix action2
-    do_action2
-    ;;
-
-  action3)
-    #TIP: use «$script_prefix action3» to ...
-    #TIP:> $script_prefix action3
-    # Os:require "convert" "imagemagick"
-    # CONVERT $input $output
+  install)
+    #TIP: use «$script_prefix install» to install Claude Code hooks (interactive)
+    #TIP:> $script_prefix install
+    #TIP: use «$script_prefix install global» or «install project» for non-interactive scope
+    #TIP:> $script_prefix -f install global
+    do_install
     ;;
 
   check | env)
@@ -154,19 +150,110 @@ function Script:main() {
 ##                   Os:require "binary" [install_cmd], Os:tempfile [ext]
 #####################################################################
 
-function do_action1() {
-  IO:log "action1"
-  # Os:require examples: (1 arg = binary name, 2 args = binary + package/command)
-  # Os:require "ffmpeg"                                  # => brew install ffmpeg
-  # Os:require "convert" "imagemagick"                   # => brew install imagemagick
-  # Os:require "progressbar" "basher install pforret/progressbar"
-  # (code)
+function do_say() {
+  IO:log "say: '${input:-}'"
+
+  local app_name
+  if [[ -n "${APP_NAME:-}" ]]; then
+    app_name="$APP_NAME"
+  else
+    app_name="$(basename "$PWD")"
+  fi
+
+  local full_message
+  if [[ -n "${input:-}" ]]; then
+    full_message="$app_name $input"
+  else
+    full_message="$app_name"
+  fi
+
+  if ((DRY_RUN)); then
+    IO:print "$full_message"
+    return 0
+  fi
+
+  if command -v say >/dev/null 2>&1; then
+    say "$full_message"
+  elif command -v spd-say >/dev/null 2>&1; then
+    spd-say "$full_message"
+  elif command -v espeak >/dev/null 2>&1; then
+    espeak "$full_message" 2>/dev/null
+  else
+    IO:print "$full_message"
+  fi
 }
 
-function do_action2() {
-  IO:log "action2"
-  # (code)
+function do_install() {
+  IO:log "install"
+  Os:require "jq"
 
+  local scope target_file target_dir
+  case "${input:-}" in
+  g | global | G | GLOBAL) scope="global" ;;
+  p | project | P | PROJECT) scope="project" ;;
+  "")
+    if ((FORCE)); then
+      scope="global"
+    else
+      local answer
+      answer="$(IO:question "Install hooks for: [p]roject only / [g]lobal" "p")"
+      case "${answer,,}" in
+      g | global | 2) scope="global" ;;
+      *) scope="project" ;;
+      esac
+    fi
+    ;;
+  *) IO:die "unknown scope [$input] - use 'global' or 'project'" ;;
+  esac
+
+  if [[ "$scope" == "global" ]]; then
+    target_dir="$HOME/.claude"
+  else
+    target_dir="./.claude"
+  fi
+  target_file="$target_dir/settings.json"
+  mkdir -p "$target_dir"
+
+  if [[ ! -f "$target_file" ]]; then
+    echo '{"hooks":{}}' >"$target_file"
+    IO:debug "Created empty $target_file"
+  fi
+
+  local hook_events=("Notification" "Stop" "StopFailure" "PreCompact" "PermissionRequest")
+  local hook_messages=("needs your attention" "is done" "encountered an error" "is compacting context" "needs permission")
+  local installed=0
+  local i event message cmd tmpfile
+
+  for i in "${!hook_events[@]}"; do
+    event="${hook_events[$i]}"
+    message="${hook_messages[$i]}"
+    cmd=$(printf '%s say "%s"' "$script_install_path" "$message")
+
+    if IO:confirm "Install $event hook? (will say \"<app> $message\")"; then
+      tmpfile="$(Os:tempfile json)"
+      if ! jq \
+        --arg event "$event" \
+        --arg cmd "$cmd" \
+        --argjson timeout 10 \
+        '
+          .hooks //= {} |
+          .hooks[$event] = ((.hooks[$event] // []) | map(select(.command != $cmd)))
+                          + [{type:"command", command:$cmd, timeout:$timeout}]
+        ' \
+        "$target_file" >"$tmpfile"; then
+        IO:die "jq failed updating $target_file"
+      fi
+      mv "$tmpfile" "$target_file"
+      installed=$((installed + 1))
+      IO:debug "Installed $event -> $cmd"
+    fi
+  done
+
+  if jq -e . "$target_file" >/dev/null 2>&1; then
+    IO:success "$installed hook(s) installed in $target_file"
+  else
+    IO:die "settings.json is not valid JSON after edits: $target_file"
+  fi
 }
 
 #####################################################################

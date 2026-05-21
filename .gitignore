@@ -1,6 +1,7 @@
-log
-.tmp
+/log/
+/.tmp/
 *.tmp
 .env
-.idea
-vendor
+/.idea/
+/vendor/
+/site/

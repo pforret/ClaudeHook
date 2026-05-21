@@ -1,6 +1,0 @@
-This favicon was generated from Twemoji (jdecked fork):
-
-- Source: https://github.com/jdecked/twemoji
-- Glyph: 1f4c4.svg (page facing up)
-- License: CC-BY 4.0 (https://creativecommons.org/licenses/by/4.0/)
-- Attribution: Copyright Twitter, Inc and other contributors, maintained by jdecked/twemoji

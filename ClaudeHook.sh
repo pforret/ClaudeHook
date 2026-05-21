@@ -86,7 +86,7 @@ flag|f|FORCE|do not ask for confirmation (always yes)
 flag|D|DRY_RUN|print message instead of speaking (for testing)
 option|L|LOG_DIR|folder for log files |$HOME/log/$script_prefix
 option|T|TMP_DIR|folder for temp files|/tmp/$script_prefix
-choice|1|action|action to perform|say,sound,install,check,env,update
+choice|1|action|action to perform|say,sound,title,notify,install,check,env,update
 param|?|input|input file/text
 " -v -e '^#' -e '^\s*$'
 }
@@ -114,6 +114,18 @@ function Script:main() {
     #TIP: use «$script_prefix sound <success|warning|error>» to play a status beep/sound
     #TIP:> $script_prefix sound success
     do_sound
+    ;;
+
+  title)
+    #TIP: use «$script_prefix title <success|warning|error|attention|info|clear>» to mark the terminal tab title
+    #TIP:> $script_prefix title attention
+    do_title
+    ;;
+
+  notify)
+    #TIP: use «$script_prefix notify "<message>"» to send an OS desktop notification "<app>: <message>"
+    #TIP:> $script_prefix notify "is done"
+    do_notify
     ;;
 
   install)
@@ -156,15 +168,19 @@ function Script:main() {
 ##                   Os:require "binary" [install_cmd], Os:tempfile [ext]
 #####################################################################
 
+function _app_name() {
+  if [[ -n "${APP_NAME:-}" ]]; then
+    echo "$APP_NAME"
+  else
+    basename "$PWD"
+  fi
+}
+
 function do_say() {
   IO:log "say: '${input:-}'"
 
   local app_name
-  if [[ -n "${APP_NAME:-}" ]]; then
-    app_name="$APP_NAME"
-  else
-    app_name="$(basename "$PWD")"
-  fi
+  app_name="$(_app_name)"
 
   local full_message
   if [[ -n "${input:-}" ]]; then
@@ -235,6 +251,71 @@ function do_sound() {
     printf '\a' >&2
     ((i < beeps - 1)) && sleep 0.15
   done
+}
+
+function do_title() {
+  IO:log "title: '${input:-}'"
+
+  local kind="${input:-}"
+  [[ -z "$kind" ]] && IO:die "title: missing status - use 'success', 'warning', 'error', 'attention', 'info' or 'clear'"
+
+  case "${kind,,}" in
+  s | success | ok) kind="success" ;;
+  w | warning | warn) kind="warning" ;;
+  e | error | err | fail | failure) kind="error" ;;
+  a | attention | bell | alert) kind="attention" ;;
+  i | info) kind="info" ;;
+  c | clear | reset | off | none) kind="clear" ;;
+  *) IO:die "title: unknown status [$kind] - use 'success', 'warning', 'error', 'attention', 'info' or 'clear'" ;;
+  esac
+
+  local emoji
+  case "$kind" in
+  success)   emoji="✅" ;;
+  warning)   emoji="⚠️" ;;
+  error)     emoji="⛔" ;;
+  attention) emoji="🔔" ;;
+  info)      emoji="ℹ️" ;;
+  clear)     emoji="" ;;
+  esac
+
+  local app title
+  app="$(_app_name)"
+  if [[ -n "$emoji" ]]; then
+    title="$emoji $app"
+  else
+    title="$app"
+  fi
+
+  if ((DRY_RUN)); then
+    IO:print "$title"
+    return 0
+  fi
+
+  # OSC 0 sets icon name + window/tab title. Write to /dev/tty so the escape
+  # reaches the terminal even when Claude Code captures stdout from the hook.
+  if [[ -w /dev/tty ]]; then
+    printf '\e]0;%s\a' "$title" >/dev/tty
+  fi
+}
+
+function do_notify() {
+  IO:log "notify: '${input:-}'"
+
+  local app message
+  app="$(_app_name)"
+  message="${input:-}"
+
+  if ((DRY_RUN)); then
+    if [[ -n "$message" ]]; then
+      IO:print "$app: $message"
+    else
+      IO:print "$app"
+    fi
+    return 0
+  fi
+
+  Os:notify "$message" "$app"
 }
 
 function do_install() {

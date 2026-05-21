@@ -40,14 +40,40 @@ test_install_hook_command_uses_absolute_path() {
   local fake_home
   fake_home="$(mktemp -d)"
   HOME="$fake_home" "$root_script" -f install global >/dev/null
-  local cmd
-  cmd="$(jq -r '.hooks.Stop[0].command' "$fake_home/.claude/settings.json")"
-  # Expect: /abs/path/ClaudeHook.sh say "is done"
+  local cmd matcher
+  cmd="$(jq -r '.hooks.Stop[0].hooks[0].command' "$fake_home/.claude/settings.json")"
+  matcher="$(jq -r '.hooks.Stop[0].matcher' "$fake_home/.claude/settings.json")"
+  # Expect: rule with matcher:"" and nested hooks[0].command = /abs/path/ClaudeHook.sh say "is done"
+  assert_equals "" "$matcher"
   assert_equals "/" "${cmd:0:1}"
   case "$cmd" in
     *'say "is done"') ;;
     *) fail "Stop command does not end with: say \"is done\" - got: $cmd" ;;
   esac
+  rm -rf "$fake_home"
+}
+
+test_install_repairs_legacy_flat_shape() {
+  # Simulate a settings.json written by the v0.0.1 flat-shape bug.
+  local fake_home
+  fake_home="$(mktemp -d)"
+  mkdir -p "$fake_home/.claude"
+  cat >"$fake_home/.claude/settings.json" <<JSON
+{"hooks":{"Stop":[{"type":"command","command":"BOGUS_OLD_CMD","timeout":10}]}}
+JSON
+  HOME="$fake_home" "$root_script" -f install global >/dev/null
+  local settings="$fake_home/.claude/settings.json"
+  # After repair: exactly 1 Stop rule, in correct nested shape, with the NEW command.
+  assert_equals 1 "$(jq '.hooks.Stop | length' "$settings")"
+  assert_equals "" "$(jq -r '.hooks.Stop[0].matcher' "$settings")"
+  local cmd
+  cmd="$(jq -r '.hooks.Stop[0].hooks[0].command' "$settings")"
+  case "$cmd" in
+    *'say "is done"') ;;
+    *) fail "repaired Stop command should end with: say \"is done\" - got: $cmd" ;;
+  esac
+  # The BOGUS legacy entry must be gone, not preserved.
+  assert_equals "false" "$(jq '[.hooks.Stop[].command? // empty] | length > 0' "$settings")"
   rm -rf "$fake_home"
 }
 

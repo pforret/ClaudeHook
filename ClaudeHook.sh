@@ -231,14 +231,25 @@ function do_install() {
 
     if IO:confirm "Install $event hook? (will say \"<app> $message\")"; then
       tmpfile="$(Os:tempfile json)"
+      # Schema: .hooks.<event>[] = {matcher:"", hooks:[{type:"command", command, timeout}]}
+      # Dedup strategy: drop any entry that has a top-level .command (the legacy flat
+      # shape written by v0.0.1 — always broken under the current Claude Code schema)
+      # AND drop any correctly-shaped entry whose nested .hooks[].command equals ours.
+      # Entries authored by other tools (correct nested shape, different command) are
+      # preserved untouched.
       if ! jq \
         --arg event "$event" \
         --arg cmd "$cmd" \
         --argjson timeout 10 \
         '
           .hooks //= {} |
-          .hooks[$event] = ((.hooks[$event] // []) | map(select(.command != $cmd)))
-                          + [{type:"command", command:$cmd, timeout:$timeout}]
+          .hooks[$event] = (
+            ((.hooks[$event] // []) | map(select(
+              (.command? == null) and
+              (((.hooks? // []) | map(.command) | index($cmd)) == null)
+            )))
+            + [{matcher: "", hooks: [{type: "command", command: $cmd, timeout: $timeout}]}]
+          )
         ' \
         "$target_file" >"$tmpfile"; then
         IO:die "jq failed updating $target_file"

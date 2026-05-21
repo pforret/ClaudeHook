@@ -86,7 +86,7 @@ flag|f|FORCE|do not ask for confirmation (always yes)
 flag|D|DRY_RUN|print message instead of speaking (for testing)
 option|L|LOG_DIR|folder for log files |$HOME/log/$script_prefix
 option|T|TMP_DIR|folder for temp files|/tmp/$script_prefix
-choice|1|action|action to perform|say,install,check,env,update
+choice|1|action|action to perform|say,sound,install,check,env,update
 param|?|input|input file/text
 " -v -e '^#' -e '^\s*$'
 }
@@ -108,6 +108,12 @@ function Script:main() {
     #TIP: use «$script_prefix say "<message>"» to speak "<app> <message>"
     #TIP:> $script_prefix say "is done"
     do_say
+    ;;
+
+  sound)
+    #TIP: use «$script_prefix sound <success|warning|error>» to play a status beep/sound
+    #TIP:> $script_prefix sound success
+    do_sound
     ;;
 
   install)
@@ -181,6 +187,54 @@ function do_say() {
   else
     IO:print "$full_message"
   fi
+}
+
+function do_sound() {
+  IO:log "sound: '${input:-}'"
+
+  local kind="${input:-}"
+  [[ -z "$kind" ]] && IO:die "sound: missing kind - use 'success', 'warning' or 'error'"
+
+  case "${kind,,}" in
+  s | success | ok) kind="success" ;;
+  w | warning | warn) kind="warning" ;;
+  e | error | err | fail | failure) kind="error" ;;
+  *) IO:die "sound: unknown kind [$kind] - use 'success', 'warning' or 'error'" ;;
+  esac
+
+  local mac_sound linux_sound beeps
+  case "$kind" in
+  success) mac_sound="Glass.aiff"  ; linux_sound="complete.oga"       ; beeps=1 ;;
+  warning) mac_sound="Ping.aiff"   ; linux_sound="dialog-warning.oga" ; beeps=2 ;;
+  error)   mac_sound="Basso.aiff"  ; linux_sound="dialog-error.oga"   ; beeps=3 ;;
+  esac
+
+  if ((DRY_RUN)); then
+    IO:print "$kind"
+    return 0
+  fi
+
+  if command -v afplay >/dev/null 2>&1 && [[ -f "/System/Library/Sounds/$mac_sound" ]]; then
+    afplay "/System/Library/Sounds/$mac_sound" 2>/dev/null
+    return 0
+  fi
+
+  local linux_path="/usr/share/sounds/freedesktop/stereo/$linux_sound"
+  if [[ -f "$linux_path" ]]; then
+    if command -v paplay >/dev/null 2>&1; then
+      paplay "$linux_path" 2>/dev/null
+      return 0
+    elif command -v aplay >/dev/null 2>&1; then
+      aplay -q "$linux_path" 2>/dev/null
+      return 0
+    fi
+  fi
+
+  local i
+  for ((i = 0; i < beeps; i++)); do
+    printf '\a' >&2
+    ((i < beeps - 1)) && sleep 0.15
+  done
 }
 
 function do_install() {

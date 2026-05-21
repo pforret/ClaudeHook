@@ -36,19 +36,20 @@ test_install_produces_valid_json() {
   rm -rf "$fake_home"
 }
 
-test_install_hook_command_uses_absolute_path() {
+test_install_hook_command_chains_title_say_notify() {
   local fake_home
   fake_home="$(mktemp -d)"
   HOME="$fake_home" "$root_script" -f install global >/dev/null
   local cmd matcher
   cmd="$(jq -r '.hooks.Stop[0].hooks[0].command' "$fake_home/.claude/settings.json")"
   matcher="$(jq -r '.hooks.Stop[0].matcher' "$fake_home/.claude/settings.json")"
-  # Expect: rule with matcher:"" and nested hooks[0].command = /abs/path/ClaudeHook.sh say "is done"
+  # Expect: rule with matcher:"" and a chained title/say/notify command,
+  # each component invoking the script by absolute path.
   assert_equals "" "$matcher"
   assert_equals "/" "${cmd:0:1}"
   case "$cmd" in
-    *'say "is done"') ;;
-    *) fail "Stop command does not end with: say \"is done\" - got: $cmd" ;;
+    *'title success'*'say "is done"'*'notify "is done"') ;;
+    *) fail "Stop command should chain title/say/notify - got: $cmd" ;;
   esac
   rm -rf "$fake_home"
 }
@@ -63,17 +64,45 @@ test_install_repairs_legacy_flat_shape() {
 JSON
   HOME="$fake_home" "$root_script" -f install global >/dev/null
   local settings="$fake_home/.claude/settings.json"
-  # After repair: exactly 1 Stop rule, in correct nested shape, with the NEW command.
+  # After repair: exactly 1 Stop rule, in correct nested shape, with the NEW chained command.
   assert_equals 1 "$(jq '.hooks.Stop | length' "$settings")"
   assert_equals "" "$(jq -r '.hooks.Stop[0].matcher' "$settings")"
   local cmd
   cmd="$(jq -r '.hooks.Stop[0].hooks[0].command' "$settings")"
   case "$cmd" in
-    *'say "is done"') ;;
-    *) fail "repaired Stop command should end with: say \"is done\" - got: $cmd" ;;
+    *'title success'*'say "is done"'*'notify "is done"') ;;
+    *) fail "repaired Stop command should chain title/say/notify - got: $cmd" ;;
   esac
   # The BOGUS legacy entry must be gone, not preserved.
   assert_equals "false" "$(jq '[.hooks.Stop[].command? // empty] | length > 0' "$settings")"
+  rm -rf "$fake_home"
+}
+
+test_install_upgrades_old_single_action_command() {
+  # A previous install registered just `... say "is done"` (correct nested shape, old verb).
+  # Re-running install should REPLACE it with the chained title/say/notify form,
+  # not append a duplicate. Third-party entries with a different command prefix must survive.
+  local fake_home script_abs
+  fake_home="$(mktemp -d)"
+  mkdir -p "$fake_home/.claude"
+  script_abs="$(cd "$(dirname "$root_script")" && pwd)/$(basename "$root_script")"
+  cat >"$fake_home/.claude/settings.json" <<JSON
+{"hooks":{"Stop":[
+  {"matcher":"","hooks":[{"type":"command","command":"$script_abs say \"is done\"","timeout":10}]},
+  {"matcher":"","hooks":[{"type":"command","command":"/usr/local/bin/other-tool stop","timeout":10}]}
+]}}
+JSON
+  HOME="$fake_home" "$root_script" -f install global >/dev/null
+  local settings="$fake_home/.claude/settings.json"
+  # Old ClaudeHook entry gone, third-party entry preserved, new chained entry added: total = 2.
+  assert_equals 2 "$(jq '.hooks.Stop | length' "$settings")"
+  assert_equals 1 "$(jq '[.hooks.Stop[] | select(.hooks[0].command | startswith("/usr/local/bin/other-tool"))] | length' "$settings")"
+  local our_cmd
+  our_cmd="$(jq -r --arg sp "$script_abs" '[.hooks.Stop[] | select(.hooks[0].command | startswith($sp))][0].hooks[0].command' "$settings")"
+  case "$our_cmd" in
+    *'title success'*'say "is done"'*'notify "is done"') ;;
+    *) fail "upgraded Stop command should chain title/say/notify - got: $our_cmd" ;;
+  esac
   rm -rf "$fake_home"
 }
 

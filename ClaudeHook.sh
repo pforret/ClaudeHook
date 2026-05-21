@@ -86,7 +86,7 @@ flag|f|FORCE|do not ask for confirmation (always yes)
 flag|D|DRY_RUN|print message instead of speaking (for testing)
 option|L|LOG_DIR|folder for log files |$HOME/log/$script_prefix
 option|T|TMP_DIR|folder for temp files|/tmp/$script_prefix
-choice|1|action|action to perform|say,sound,install,check,env,update
+choice|1|action|action to perform|say,sound,title,notify,install,check,env,update
 param|?|input|input file/text
 " -v -e '^#' -e '^\s*$'
 }
@@ -114,6 +114,18 @@ function Script:main() {
     #TIP: use «$script_prefix sound <success|warning|error>» to play a status beep/sound
     #TIP:> $script_prefix sound success
     do_sound
+    ;;
+
+  title)
+    #TIP: use «$script_prefix title <success|warning|error|attention|info|clear>» to mark the terminal tab title
+    #TIP:> $script_prefix title attention
+    do_title
+    ;;
+
+  notify)
+    #TIP: use «$script_prefix notify "<message>"» to send an OS desktop notification "<app>: <message>"
+    #TIP:> $script_prefix notify "is done"
+    do_notify
     ;;
 
   install)
@@ -156,15 +168,19 @@ function Script:main() {
 ##                   Os:require "binary" [install_cmd], Os:tempfile [ext]
 #####################################################################
 
+function _app_name() {
+  if [[ -n "${APP_NAME:-}" ]]; then
+    echo "$APP_NAME"
+  else
+    basename "$PWD"
+  fi
+}
+
 function do_say() {
   IO:log "say: '${input:-}'"
 
   local app_name
-  if [[ -n "${APP_NAME:-}" ]]; then
-    app_name="$APP_NAME"
-  else
-    app_name="$(basename "$PWD")"
-  fi
+  app_name="$(_app_name)"
 
   local full_message
   if [[ -n "${input:-}" ]]; then
@@ -237,6 +253,71 @@ function do_sound() {
   done
 }
 
+function do_title() {
+  IO:log "title: '${input:-}'"
+
+  local kind="${input:-}"
+  [[ -z "$kind" ]] && IO:die "title: missing status - use 'success', 'warning', 'error', 'attention', 'info' or 'clear'"
+
+  case "${kind,,}" in
+  s | success | ok) kind="success" ;;
+  w | warning | warn) kind="warning" ;;
+  e | error | err | fail | failure) kind="error" ;;
+  a | attention | bell | alert) kind="attention" ;;
+  i | info) kind="info" ;;
+  c | clear | reset | off | none) kind="clear" ;;
+  *) IO:die "title: unknown status [$kind] - use 'success', 'warning', 'error', 'attention', 'info' or 'clear'" ;;
+  esac
+
+  local emoji
+  case "$kind" in
+  success)   emoji="✅" ;;
+  warning)   emoji="⚠️" ;;
+  error)     emoji="⛔" ;;
+  attention) emoji="🔔" ;;
+  info)      emoji="ℹ️" ;;
+  clear)     emoji="" ;;
+  esac
+
+  local app title
+  app="$(_app_name)"
+  if [[ -n "$emoji" ]]; then
+    title="$emoji $app"
+  else
+    title="$app"
+  fi
+
+  if ((DRY_RUN)); then
+    IO:print "$title"
+    return 0
+  fi
+
+  # OSC 0 sets icon name + window/tab title. Write to /dev/tty so the escape
+  # reaches the terminal even when Claude Code captures stdout from the hook.
+  if [[ -w /dev/tty ]]; then
+    printf '\e]0;%s\a' "$title" >/dev/tty
+  fi
+}
+
+function do_notify() {
+  IO:log "notify: '${input:-}'"
+
+  local app message
+  app="$(_app_name)"
+  message="${input:-}"
+
+  if ((DRY_RUN)); then
+    if [[ -n "$message" ]]; then
+      IO:print "$app: $message"
+    else
+      IO:print "$app"
+    fi
+    return 0
+  fi
+
+  Os:notify "$message" "$app"
+}
+
 function do_install() {
   IO:log "install"
   Os:require "jq"
@@ -273,34 +354,51 @@ function do_install() {
     IO:debug "Created empty $target_file"
   fi
 
-  local hook_events=("Notification" "Stop" "StopFailure" "PreCompact" "PermissionRequest")
-  local hook_messages=("needs your attention" "is done" "encountered an error" "is compacting context" "needs permission")
+  local hook_events=(   "Notification"         "Stop"    "StopFailure"           "PreCompact"             "PermissionRequest")
+  local hook_statuses=( "attention"            "success" "error"                 "info"                   "attention")
+  local hook_messages=( "needs your attention" "is done" "encountered an error"  "is compacting context"  "needs permission")
   local installed=0
-  local i event message cmd tmpfile
+  local i event status message emoji cmd tmpfile
 
   for i in "${!hook_events[@]}"; do
     event="${hook_events[$i]}"
+    status="${hook_statuses[$i]}"
     message="${hook_messages[$i]}"
-    cmd=$(printf '%s say "%s"' "$script_install_path" "$message")
+    case "$status" in
+    success)   emoji="✅" ;;
+    warning)   emoji="⚠️" ;;
+    error)     emoji="⛔" ;;
+    attention) emoji="🔔" ;;
+    info)      emoji="ℹ️" ;;
+    esac
+    # Chain title/say/notify with ';' so a missing component (e.g. no audio,
+    # no notify-send) doesn't block the others. Title goes first — it's the
+    # fastest visual cue and the one that lets you spot the alerting tab.
+    cmd=$(printf '%s title %s; %s say "%s"; %s notify "%s"' \
+      "$script_install_path" "$status" \
+      "$script_install_path" "$message" \
+      "$script_install_path" "$message")
 
-    if IO:confirm "Install $event hook? (will say \"<app> $message\")"; then
+    if IO:confirm "Install $event hook? ($emoji tab title, say \"<app> $message\", desktop notify)"; then
       tmpfile="$(Os:tempfile json)"
       # Schema: .hooks.<event>[] = {matcher:"", hooks:[{type:"command", command, timeout}]}
-      # Dedup strategy: drop any entry that has a top-level .command (the legacy flat
-      # shape written by v0.0.1 — always broken under the current Claude Code schema)
-      # AND drop any correctly-shaped entry whose nested .hooks[].command equals ours.
-      # Entries authored by other tools (correct nested shape, different command) are
-      # preserved untouched.
+      # Dedup strategy:
+      #   - drop any entry with a top-level .command (legacy v0.0.1 flat shape — broken)
+      #   - drop any correctly-shaped entry whose nested .hooks[].command invokes THIS
+      #     script (by absolute path prefix). This makes re-running install upgrade
+      #     prior installs (e.g. the old `say`-only command) instead of duplicating.
+      # Entries authored by other tools (different command prefix) are preserved.
       if ! jq \
         --arg event "$event" \
         --arg cmd "$cmd" \
+        --arg script_path "$script_install_path" \
         --argjson timeout 10 \
         '
           .hooks //= {} |
           .hooks[$event] = (
             ((.hooks[$event] // []) | map(select(
               (.command? == null) and
-              (((.hooks? // []) | map(.command) | index($cmd)) == null)
+              (((.hooks? // []) | map(.command) | map(startswith($script_path)) | any) | not)
             )))
             + [{matcher: "", hooks: [{type: "command", command: $cmd, timeout: $timeout}]}]
           )

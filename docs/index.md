@@ -24,8 +24,8 @@ Flags, options and parameters:
     -D|--DRY_RUN     : [flag] print message instead of speaking (for testing)
     -L|--LOG_DIR <?> : [option] folder for log files
     -T|--TMP_DIR <?> : [option] folder for temp files
-    <action>         : [choice] action to perform  [options: say,install,check,env,update]
-    <input>          : [parameter] message for `say`, or scope for `install` (optional)
+    <action>         : [choice] action to perform  [options: say,sound,install,check,env,update]
+    <input>          : [parameter] message for `say`, kind for `sound`, or scope for `install` (optional)
 ```
 
 ## ⚡️ Setup — one-step install
@@ -69,6 +69,23 @@ in `.env` if present, otherwise `basename $PWD`.
 
 > ClaudeHook -D say "is done"       # --DRY_RUN: prints instead of speaking
 ```
+
+## 🔔 `sound` — quick status beeps
+
+`ClaudeHook sound <success|warning|error>` plays a short status sound. It tries
+`afplay` with the built-in macOS system sounds, then `paplay` / `aplay` with the
+freedesktop sound theme on Linux, and finally falls back to ASCII `BEL`
+characters (1 beep for `success`, 2 for `warning`, 3 for `error`).
+
+```bash
+> ClaudeHook sound success          # plays Glass.aiff / complete.oga / 1 beep
+> ClaudeHook sound warning          # plays Ping.aiff  / dialog-warning.oga / 2 beeps
+> ClaudeHook sound error            # plays Basso.aiff / dialog-error.oga   / 3 beeps
+
+> ClaudeHook -D sound success       # --DRY_RUN: prints the kind instead of playing
+```
+
+Aliases: `ok` → `success`, `warn` → `warning`, `fail` / `err` → `error`.
 
 ## 🚀 Installation
 

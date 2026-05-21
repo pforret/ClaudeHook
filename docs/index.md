@@ -30,16 +30,25 @@ Flags, options and parameters:
 
 ## ⚡️ Setup — one-step install
 
+Each installed hook fires three actions in sequence: it **decorates the
+terminal tab title** with a status emoji (so you can see which tab is
+alerting), **speaks** the message, and **sends a desktop notification**.
+
 ```bash
 > ClaudeHook install
 Install hooks for: [p]roject only / [g]lobal (p) > g
-Install Notification hook? (will say "<app> needs your attention") [y/N] y
-Install Stop hook? (will say "<app> is done") [y/N] y
-Install StopFailure hook? (will say "<app> encountered an error") [y/N] y
-Install PreCompact hook? (will say "<app> is compacting context") [y/N] n
-Install PermissionRequest hook? (will say "<app> needs permission") [y/N] y
+Install Notification hook? (🔔 tab title, say "<app> needs your attention", desktop notify) [y/N] y
+Install Stop hook? (✅ tab title, say "<app> is done", desktop notify) [y/N] y
+Install StopFailure hook? (⛔ tab title, say "<app> encountered an error", desktop notify) [y/N] y
+Install PreCompact hook? (ℹ️ tab title, say "<app> is compacting context", desktop notify) [y/N] n
+Install PermissionRequest hook? (🔔 tab title, say "<app> needs permission", desktop notify) [y/N] y
 ✅ 4 hook(s) installed in /Users/me/.claude/settings.json
 ```
+
+The three actions are chained with `;` so a missing component (no audio,
+no `notify-send`, no tty) doesn't block the others. Re-running `install`
+upgrades any previous ClaudeHook entries in place — it won't duplicate them,
+and entries written by other tools are preserved untouched.
 
 `-f` skips all prompts and installs every hook globally:
 

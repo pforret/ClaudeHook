@@ -354,34 +354,51 @@ function do_install() {
     IO:debug "Created empty $target_file"
   fi
 
-  local hook_events=("Notification" "Stop" "StopFailure" "PreCompact" "PermissionRequest")
-  local hook_messages=("needs your attention" "is done" "encountered an error" "is compacting context" "needs permission")
+  local hook_events=(   "Notification"         "Stop"    "StopFailure"           "PreCompact"             "PermissionRequest")
+  local hook_statuses=( "attention"            "success" "error"                 "info"                   "attention")
+  local hook_messages=( "needs your attention" "is done" "encountered an error"  "is compacting context"  "needs permission")
   local installed=0
-  local i event message cmd tmpfile
+  local i event status message emoji cmd tmpfile
 
   for i in "${!hook_events[@]}"; do
     event="${hook_events[$i]}"
+    status="${hook_statuses[$i]}"
     message="${hook_messages[$i]}"
-    cmd=$(printf '%s say "%s"' "$script_install_path" "$message")
+    case "$status" in
+    success)   emoji="✅" ;;
+    warning)   emoji="⚠️" ;;
+    error)     emoji="⛔" ;;
+    attention) emoji="🔔" ;;
+    info)      emoji="ℹ️" ;;
+    esac
+    # Chain title/say/notify with ';' so a missing component (e.g. no audio,
+    # no notify-send) doesn't block the others. Title goes first — it's the
+    # fastest visual cue and the one that lets you spot the alerting tab.
+    cmd=$(printf '%s title %s; %s say "%s"; %s notify "%s"' \
+      "$script_install_path" "$status" \
+      "$script_install_path" "$message" \
+      "$script_install_path" "$message")
 
-    if IO:confirm "Install $event hook? (will say \"<app> $message\")"; then
+    if IO:confirm "Install $event hook? ($emoji tab title, say \"<app> $message\", desktop notify)"; then
       tmpfile="$(Os:tempfile json)"
       # Schema: .hooks.<event>[] = {matcher:"", hooks:[{type:"command", command, timeout}]}
-      # Dedup strategy: drop any entry that has a top-level .command (the legacy flat
-      # shape written by v0.0.1 — always broken under the current Claude Code schema)
-      # AND drop any correctly-shaped entry whose nested .hooks[].command equals ours.
-      # Entries authored by other tools (correct nested shape, different command) are
-      # preserved untouched.
+      # Dedup strategy:
+      #   - drop any entry with a top-level .command (legacy v0.0.1 flat shape — broken)
+      #   - drop any correctly-shaped entry whose nested .hooks[].command invokes THIS
+      #     script (by absolute path prefix). This makes re-running install upgrade
+      #     prior installs (e.g. the old `say`-only command) instead of duplicating.
+      # Entries authored by other tools (different command prefix) are preserved.
       if ! jq \
         --arg event "$event" \
         --arg cmd "$cmd" \
+        --arg script_path "$script_install_path" \
         --argjson timeout 10 \
         '
           .hooks //= {} |
           .hooks[$event] = (
             ((.hooks[$event] // []) | map(select(
               (.command? == null) and
-              (((.hooks? // []) | map(.command) | index($cmd)) == null)
+              (((.hooks? // []) | map(.command) | map(startswith($script_path)) | any) | not)
             )))
             + [{matcher: "", hooks: [{type: "command", command: $cmd, timeout: $timeout}]}]
           )

@@ -24,8 +24,8 @@ Flags, options and parameters:
     -D|--DRY_RUN     : [flag] print message instead of speaking (for testing)
     -L|--LOG_DIR <?> : [option] folder for log files
     -T|--TMP_DIR <?> : [option] folder for temp files
-    <action>         : [choice] action to perform  [options: say,sound,title,notify,install,check,env,update]
-    <input>          : [parameter] message for `say`/`notify`, kind for `sound`, status for `title`, or scope for `install` (optional)
+    <action>         : [choice] action to perform  [options: say,sound,title,notify,push,install,check,env,update]
+    <input>          : [parameter] message for `say`/`notify`/`push`, kind for `sound`, status for `title`, or scope for `install` (optional)
 ```
 
 ## ⚡️ Setup — one-step install
@@ -135,6 +135,61 @@ again.
 > ClaudeHook notify "is done"       # notification: "myproject" / "is done"
 > ClaudeHook -D notify "is done"    # --DRY_RUN: prints "myproject: is done"
 ```
+
+## 📡 `push` — remote/off-device alerts
+
+`ClaudeHook push "<message>"` relays the message to a remote channel of your
+choice. Useful when you walk away from the keyboard: get pinged on your phone
+when Claude finishes or needs you.
+
+Channel + credentials are read from `.env`. If `PUSH_CHANNEL` is **unset**,
+`push` is silent (so it can sit in a hook chain without bothering users who
+haven't opted in). If `PUSH_CHANNEL` is **set but its credentials are empty**,
+you get a loud warning naming the exact variables to add.
+
+Supported channels:
+
+| `PUSH_CHANNEL` | Required `.env` vars                                  | Transport               |
+|----------------|-------------------------------------------------------|-------------------------|
+| `ntfy`         | `NTFY_TOPIC`                                          | `curl` → ntfy.sh        |
+| `pushover`     | `PUSHOVER_USER_KEY`, `PUSHOVER_APP_TOKEN`             | `curl` → api.pushover.net |
+| `telegram`     | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`              | `curl` → api.telegram.org |
+| `slack`        | `SLACK_WEBHOOK_URL`                                   | `curl` → incoming webhook |
+| `discord`      | `DISCORD_WEBHOOK_URL`                                 | `curl` → incoming webhook |
+| `whatsapp`     | `WHATSAPP_TO`, `WHATSAPP_CMD`                         | exec local CLI client   |
+
+Example `.env` for the **ntfy** channel (easiest setup — install the ntfy app
+on your phone, subscribe to a secret topic name, you're done):
+
+```bash
+PUSH_CHANNEL=ntfy
+NTFY_TOPIC=my-secret-topic-name        # bare topic, expanded to https://ntfy.sh/<topic>
+# or a full URL for self-hosted:
+# NTFY_TOPIC=https://ntfy.example.com/my-topic
+```
+
+**WhatsApp** has no canonical CLI, so `WHATSAPP_CMD` is a template with
+`{to}` and `{msg}` placeholders. Works with any community CLI client
+(`yowsup-cli`, `whatsmeow`-based clients, `wuzapi` wrappers, Twilio CLI, etc.).
+The template is split on whitespace before substitution, so a multi-word
+message stays a single argv element:
+
+```bash
+PUSH_CHANNEL=whatsapp
+WHATSAPP_TO=+31612345678
+WHATSAPP_CMD=whatsapp-cli send -t {to} -m {msg}
+# or any other CLI:
+# WHATSAPP_CMD=yowsup-cli demos --send {to} {msg}
+```
+
+```bash
+> ClaudeHook push "is done"            # routes via $PUSH_CHANNEL
+> ClaudeHook -D push "is done"         # --DRY_RUN: prints the resolved request
+```
+
+`push` is not wired into the `install` flow by default — opt in by editing
+your hook command in `~/.claude/settings.json` (or `./.claude/settings.json`)
+and appending `; <abs>/ClaudeHook.sh push "<message>"` to the chain.
 
 ## 🚀 Installation
 

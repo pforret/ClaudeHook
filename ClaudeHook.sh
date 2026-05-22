@@ -86,7 +86,7 @@ flag|f|FORCE|do not ask for confirmation (always yes)
 flag|D|DRY_RUN|print message instead of speaking (for testing)
 option|L|LOG_DIR|folder for log files |$HOME/log/$script_prefix
 option|T|TMP_DIR|folder for temp files|/tmp/$script_prefix
-choice|1|action|action to perform|say,sound,title,notify,install,check,env,update
+choice|1|action|action to perform|say,sound,title,notify,push,install,check,env,update
 param|?|input|input file/text
 " -v -e '^#' -e '^\s*$'
 }
@@ -126,6 +126,12 @@ function Script:main() {
     #TIP: use «$script_prefix notify "<message>"» to send an OS desktop notification "<app>: <message>"
     #TIP:> $script_prefix notify "is done"
     do_notify
+    ;;
+
+  push)
+    #TIP: use «$script_prefix push "<message>"» to push to a remote channel (ntfy/pushover/telegram/slack/discord) - configure PUSH_CHANNEL + credentials in .env
+    #TIP:> $script_prefix push "is done"
+    do_push
     ;;
 
   install)
@@ -316,6 +322,188 @@ function do_notify() {
   fi
 
   Os:notify "$message" "$app"
+}
+
+function do_push() {
+  IO:log "push: '${input:-}'"
+
+  local app message channel
+  app="$(_app_name)"
+  message="${input:-$app}"
+  channel="${PUSH_CHANNEL:-}"
+
+  # Unset PUSH_CHANNEL = not opted in. Stay silent so push can sit in the
+  # hook chain without spamming users who haven't configured a channel.
+  if [[ -z "$channel" ]]; then
+    IO:debug "push: PUSH_CHANNEL not set, skipping"
+    return 0
+  fi
+
+  case "${channel,,}" in
+  ntfy)     _push_ntfy     "$app" "$message" ;;
+  pushover) _push_pushover "$app" "$message" ;;
+  telegram) _push_telegram "$app" "$message" ;;
+  slack)    _push_slack    "$app" "$message" ;;
+  discord)  _push_discord  "$app" "$message" ;;
+  whatsapp) _push_whatsapp "$app" "$message" ;;
+  *)
+    IO:alert "push: unknown PUSH_CHANNEL [$channel] - use ntfy, pushover, telegram, slack, discord or whatsapp"
+    return 0
+    ;;
+  esac
+}
+
+function _push_need_env() {
+  # _push_need_env <channel> <var1> [<var2> ...]
+  # Returns 0 if all env vars are non-empty; otherwise prints an alert listing
+  # the missing ones (so the user knows what's missing in .env) and returns 1.
+  local channel="$1"; shift
+  local var missing=()
+  for var in "$@"; do
+    [[ -z "${!var:-}" ]] && missing+=("$var")
+  done
+  if ((${#missing[@]} > 0)); then
+    # Local IFS=' ' so ${missing[*]} joins on space — the script-global
+    # IFS=$'\n\t' would otherwise wrap each missing var on its own line.
+    local IFS=' '
+    IO:alert "push: $channel needs ${missing[*]} in .env (PUSH_CHANNEL=$channel is set but credentials are empty)"
+    return 1
+  fi
+  return 0
+}
+
+function _push_ntfy() {
+  local app="$1" message="$2"
+  _push_need_env "ntfy" NTFY_TOPIC || return 0
+
+  # NTFY_TOPIC can be a bare topic name (use ntfy.sh) or a full URL (self-hosted).
+  local url="$NTFY_TOPIC"
+  [[ "$url" != http://* && "$url" != https://* ]] && url="https://ntfy.sh/$url"
+
+  if ((DRY_RUN)); then
+    IO:print "ntfy POST $url | Title: $app | $message"
+    return 0
+  fi
+
+  Os:require "curl"
+  curl -sS -X POST "$url" \
+    -H "Title: $app" \
+    -d "$message" \
+    >/dev/null 2>&1 || IO:alert "push: ntfy POST to $url failed"
+}
+
+function _push_pushover() {
+  local app="$1" message="$2"
+  _push_need_env "pushover" PUSHOVER_USER_KEY PUSHOVER_APP_TOKEN || return 0
+
+  if ((DRY_RUN)); then
+    IO:print "pushover POST | title=$app | message=$message"
+    return 0
+  fi
+
+  Os:require "curl"
+  curl -sS -X POST https://api.pushover.net/1/messages.json \
+    --data-urlencode "token=$PUSHOVER_APP_TOKEN" \
+    --data-urlencode "user=$PUSHOVER_USER_KEY" \
+    --data-urlencode "title=$app" \
+    --data-urlencode "message=$message" \
+    >/dev/null 2>&1 || IO:alert "push: pushover POST failed"
+}
+
+function _push_telegram() {
+  local app="$1" message="$2"
+  _push_need_env "telegram" TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID || return 0
+
+  if ((DRY_RUN)); then
+    IO:print "telegram POST chat=$TELEGRAM_CHAT_ID | text=$app: $message"
+    return 0
+  fi
+
+  Os:require "curl"
+  curl -sS -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" \
+    --data-urlencode "chat_id=$TELEGRAM_CHAT_ID" \
+    --data-urlencode "text=$app: $message" \
+    >/dev/null 2>&1 || IO:alert "push: telegram POST failed"
+}
+
+function _push_slack() {
+  local app="$1" message="$2"
+  _push_need_env "slack" SLACK_WEBHOOK_URL || return 0
+
+  if ((DRY_RUN)); then
+    IO:print "slack POST webhook | text=$app: $message"
+    return 0
+  fi
+
+  Os:require "curl"
+  Os:require "jq"
+  local payload
+  payload=$(jq -n --arg text "$app: $message" '{text: $text}')
+  curl -sS -X POST "$SLACK_WEBHOOK_URL" \
+    -H "Content-Type: application/json" \
+    --data "$payload" \
+    >/dev/null 2>&1 || IO:alert "push: slack POST failed"
+}
+
+function _push_discord() {
+  local app="$1" message="$2"
+  _push_need_env "discord" DISCORD_WEBHOOK_URL || return 0
+
+  if ((DRY_RUN)); then
+    IO:print "discord POST webhook | content=$app: $message"
+    return 0
+  fi
+
+  Os:require "curl"
+  Os:require "jq"
+  local payload
+  payload=$(jq -n --arg content "$app: $message" '{content: $content}')
+  curl -sS -X POST "$DISCORD_WEBHOOK_URL" \
+    -H "Content-Type: application/json" \
+    --data "$payload" \
+    >/dev/null 2>&1 || IO:alert "push: discord POST failed"
+}
+
+function _push_whatsapp() {
+  local app="$1" message="$2"
+  _push_need_env "whatsapp" WHATSAPP_TO WHATSAPP_CMD || return 0
+
+  local body="$app: $message"
+
+  # WHATSAPP_CMD is a command template with {to} and {msg} placeholders, so the
+  # same plumbing works with any community CLI (yowsup-cli, whatsmeow-based
+  # clients, wuzapi wrappers, Twilio CLI, etc.). Example:
+  #   WHATSAPP_CMD="whatsapp-cli send -t {to} -m {msg}"
+  # Tokens are split on whitespace BEFORE substitution, so a multi-word {msg}
+  # stays a single argv element (no re-splitting on spaces inside the message).
+  # Local IFS so `read -ra` splits on whitespace — the script-global
+  # IFS=$'\n\t' would otherwise leave the whole template as one token.
+  local -a cmd
+  IFS=$' \t\n' read -ra cmd <<<"$WHATSAPP_CMD"
+  local i
+  for i in "${!cmd[@]}"; do
+    cmd[i]="${cmd[i]//\{to\}/$WHATSAPP_TO}"
+    cmd[i]="${cmd[i]//\{msg\}/$body}"
+  done
+
+  if ((${#cmd[@]} == 0)); then
+    IO:alert "push: WHATSAPP_CMD is empty"
+    return 0
+  fi
+
+  if ((DRY_RUN)); then
+    local quoted
+    printf -v quoted '%q ' "${cmd[@]}"
+    IO:print "whatsapp EXEC ${quoted% }"
+    return 0
+  fi
+
+  if ! command -v "${cmd[0]}" >/dev/null 2>&1; then
+    IO:alert "push: whatsapp CLI '${cmd[0]}' not found (WHATSAPP_CMD=$WHATSAPP_CMD)"
+    return 0
+  fi
+
+  "${cmd[@]}" >/dev/null 2>&1 || IO:alert "push: whatsapp send via '${cmd[0]}' failed"
 }
 
 function do_install() {
